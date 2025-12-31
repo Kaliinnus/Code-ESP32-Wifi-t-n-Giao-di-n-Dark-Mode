@@ -4,38 +4,46 @@
 #include <IRrecv.h>
 #include <IRutils.h>
 
-const uint16_t kRecvPin = 15; 
+// ĐÃ ĐỔI SANG CHÂN SỐ 4 THEO Ý BẠN
+const uint16_t kRecvPin = 4; 
+
 IRrecv irrecv(kRecvPin);
 decode_results results;
 
 String lastCode = "Đang đợi tín hiệu...";
 String lastProtocol = "---";
+uint16_t lastBits = 0;
 
 WebServer server(80);
 
-// Giao diện Web Dark Mode màu đen dễ nhìn
+// Giao diện Web Dark Mode chuyên nghiệp
 void handleRoot() {
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<style>";
-  html += "body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 20px; }";
-  html += ".container { max-width: 400px; margin: auto; background: #1e1e1e; padding: 30px; border-radius: 15px; border: 1px solid #333; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }";
-  html += "h1 { color: #00e676; font-size: 22px; margin-bottom: 20px; }";
-  html += ".label { color: #888; font-size: 14px; margin-top: 15px; text-transform: uppercase; }";
-  html += ".value { color: #ffffff; font-size: 24px; font-weight: bold; margin: 10px 0; letter-spacing: 1px; }";
-  html += ".footer { margin-top: 30px; font-size: 12px; color: #555; }";
+  html += "body { background-color: #000000; color: #ffffff; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 20px; }";
+  html += ".container { max-width: 450px; margin: 30px auto; background: #111111; padding: 40px 20px; border-radius: 20px; border: 1px solid #333; box-shadow: 0 0 20px rgba(0,230,118,0.2); }";
+  html += "h1 { color: #00e676; font-size: 24px; margin-bottom: 30px; letter-spacing: 2px; }";
+  html += ".label { color: #888; font-size: 13px; margin-top: 20px; text-transform: uppercase; letter-spacing: 1px; }";
+  html += ".value { color: #00b0ff; font-size: 26px; font-weight: bold; margin: 10px 0; font-family: monospace; }";
+  html += ".footer { margin-top: 40px; font-size: 12px; color: #444; }";
+  html += ".highlight { color: #ffea00; }";
   html += "</style>";
+  // Tự động cập nhật web mỗi 1.5 giây để thấy mã mới
   html += "<script>setInterval(function(){location.reload();}, 1500);</script>";
   html += "</head><body>";
   html += "<div class='container'>";
-  html += "<h1>BỘ THU MÃ HỒNG NGOẠI</h1>";
+  html += "<h1>IR SCANNER ●</h1>";
   
   html += "<div class='label'>Giao thức (Protocol)</div>";
   html += "<div class='value' style='color: #ff9800;'>" + lastProtocol + "</div>";
   
   html += "<div class='label'>Mã số (Hex Code)</div>";
-  html += "<div class='value' style='color: #2196f3;'>" + lastCode + "</div>";
+  html += "<div class='value'>" + lastCode + "</div>";
+
+  html += "<div class='label'>Số Bit</div>";
+  html += "<div class='value' style='color: #eceff1; font-size: 20px;'>" + String(lastBits) + "</div>";
   
-  html += "<div class='footer'>Hướng Remote vào mắt thu để lấy mã</div>";
+  html += "<div class='footer'>Hướng Remote vào mắt thu và bấm nút<br>Wifi: <span class='highlight'>●</span> | IP: <span class='highlight'>192.168.4.1</span></div>";
   html += "</div></body></html>";
   
   server.send(200, "text/html", html);
@@ -43,23 +51,30 @@ void handleRoot() {
 
 void setup() {
   Serial.begin(115200);
-  irrecv.enableIRIn();
+  irrecv.enableIRIn(); // Khởi động mắt thu hồng ngoại
 
-  // Đổi tên Wifi thành dấu chấm ●
-  // Lưu ý: Một số điện thoại cũ có thể hiển thị lỗi font, nhưng đa số smartphone đời mới đều thấy rõ
+  // Phát Wifi tên ● không mật khẩu
   WiFi.softAP("●", ""); 
-
+  
   server.on("/", handleRoot);
   server.begin();
-  Serial.println("Wifi '●' đã sẵn sàng tại 192.168.4.1");
+  
+  Serial.println("Hệ thống đã sẵn sàng!");
+  Serial.println("Kết nối Wifi '●' và truy cập 192.168.4.1");
 }
 
 void loop() {
-  server.handleClient();
+  server.handleClient(); // Duy trì giao diện web
 
   if (irrecv.decode(&results)) {
+    // Khi nhận được tín hiệu, cập nhật thông tin để hiển thị lên Web
     lastProtocol = typeToString(results.decode_type);
     lastCode = "0x" + uint64ToString(results.value, 16);
-    irrecv.resume(); 
+    lastBits = results.bits;
+    
+    // In ra Serial để kiểm tra dự phòng
+    Serial.println("Thu được mã: " + lastCode + " (" + lastProtocol + ")");
+    
+    irrecv.resume(); // Tiếp tục đợi nhận mã tiếp theo
   }
 }
