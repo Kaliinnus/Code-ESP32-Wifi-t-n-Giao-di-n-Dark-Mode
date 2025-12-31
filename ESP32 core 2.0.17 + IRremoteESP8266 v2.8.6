@@ -1,0 +1,192 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+#include <IRutils.h>
+#include <Preferences.h>
+
+// Chân nhận IR
+const uint16_t kRecvPin = 4;
+IRrecv irrecv(kRecvPin);
+decode_results results;
+
+// Chân phát IR (thêm IR LED qua transistor)
+const uint16_t kSendPin = 15;  // Thay đổi nếu bạn dùng chân khác
+IRsend irsend(kSendPin);
+
+// Biến lưu mã mới nhất
+String lastCode = "Đang chờ tín hiệu...";
+String lastProtocol = "---";
+
+// Lưu trữ vĩnh viễn
+Preferences prefs;
+
+// Cấu trúc lưu mã
+struct IRCode {
+  String protocol;
+  String code;
+  String name;
+  uint16_t bits;  // Số bit của mã
+};
+IRCode savedCodes[10];
+int numCodes = 0;
+
+WebServer server(80);
+
+// Tải mã từ bộ nhớ
+void loadCodes() {
+  prefs.begin("ir_codes", false);
+  numCodes = prefs.getInt("num_codes", 0);
+  for (int i = 0; i < numCodes && i < 10; i++) {
+    String key = "code_" + String(i);
+    String data = prefs.getString(key.c_str(), "");
+    int sep1 = data.indexOf('|');
+    int sep2 = data.indexOf('|', sep1 + 1);
+    int sep3 = data.indexOf('|', sep2 + 1);
+    if (sep1 != -1 && sep2 != -1 && sep3 != -1) {
+      savedCodes[i].protocol = data.substring(0, sep1);
+      savedCodes[i].code = data.substring(sep1 + 1, sep2);
+      savedCodes[i].name = data.substring(sep2 + 1, sep3);
+      savedCodes[i].bits = data.substring(sep3 + 1).toInt();
+    }
+  }
+  prefs.end();
+}
+
+// Lưu mã mới (có số bit)
+void saveCode(String protocol, String code, String name, uint16_t bits = 32) {
+  if (numCodes >= 10) return;
+  prefs.begin("ir_codes", false);
+  String data = protocol + "|" + code + "|" + name + "|" + String(bits);
+  String key = "code_" + String(numCodes);
+  prefs.putString(key.c_str(), data);
+  prefs.putInt("num_codes", numCodes + 1);
+  prefs.end();
+  loadCodes();
+}
+
+// Xóa mã
+void deleteCode(int index) {
+  prefs.begin("ir_codes", false);
+  for (int i = index; i < numCodes - 1; i++) {
+    String oldKey = "code_" + String(i + 1);
+    String newKey = "code_" + String(i);
+    String data = prefs.getString(oldKey.c_str(), "");
+    prefs.putString(newKey.c_str(), data);
+  }
+  if (numCodes > 0) {
+    String lastKey = "code_" + String(numCodes - 1);
+    prefs.remove(lastKey.c_str());
+    prefs.putInt("num_codes", numCodes - 1);
+  }
+  prefs.end();
+  loadCodes();
+}
+
+// Hàm gửi mã IR (đã sửa lỗi)
+void sendIR(String protocol, uint64_t value, uint16_t bits) {
+  decode_type_t type = strToDecodeType(protocol.c_str());  // Hàm đúng
+  if (type == UNKNOWN) {
+    Serial.println("Protocol không hỗ trợ!");
+    return;
+  }
+  Serial.printf("Gửi: %s - 0x%llX (%d bits)\n", protocol.c_str(), value, bits);
+  irsend.send(type, value, bits);
+}
+
+// Trang chủ
+void handleRoot() {
+  String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<style>body{background:#121212;color:#fff;font-family:Arial;text-align:center;padding:20px;}";
+  html += ".box{border:2px solid #4caf50;padding:20px;border-radius:10px;max-width:600px;margin:auto;background:#1e1e1e;}";
+  html += "button{background:#4caf50;color:#fff;padding:10px;border:none;border-radius:5px;margin:5px;cursor:pointer;}";
+  html += "input{padding:10px;border-radius:5px;border:1px solid #fff;background:#333;color:#fff;width:80%;}</style>";
+  html += "<script>setInterval(()=>location.reload(), 5000);</script></head><body>";
+  html += "<div class='box'><h1>IR Scanner & Sender</h1>";
+  html += "<h3>Protocol: " + lastProtocol + "</h3><h2>" + lastCode + "</h2>";
+  
+  if (lastCode != "Đang chờ tín hiệu...") {
+    html += "<form action='/save' method='POST'>";
+    html += "<input type='text' name='name' placeholder='Đặt tên mã (VD: Bật TV)' required>";
+    html += "<button type='submit'>Lưu mã</button></form>";
+  }
+
+  html += "<h3>Mã đã lưu (" + String(numCodes) + "/10):</h3><table width='100%'><tr><th>Tên</th><th>Code</th><th></th><th></th></tr>";
+  for (int i = 0; i < numCodes; i++) {
+    html += "<tr><td>" + savedCodes[i].name + "</td><td>" + savedCodes[i].code + "</td>";
+    html += "<td><form action='/send' method='POST' style='display:inline'>";
+    html += "<input type='hidden' name='index' value='" + String(i) + "'>";
+    html += "<button type='submit'>Gửi</button></form></td>";
+    html += "<td><form action='/delete' method='POST' style='display:inline'>";
+    html += "<input type='hidden' name='index' value='" + String(i) + "'>";
+    html += "<button type='submit' style='background:#f44336'>Xóa</button></form></td></tr>";
+  }
+  html += "</table><br><small>WiFi: ● | IP: 192.168.4.1</small></div></body></html>";
+  server.send(200, "text/html", html);
+}
+
+void handleSave() {
+  String name = server.arg("name");
+  if (name == "") name = "Mã mới";
+  uint16_t bits = results.bits;  // Lấy số bit thực tế từ tín hiệu nhận được
+  saveCode(lastProtocol, lastCode, name, bits);
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleSend() {
+  if (server.hasArg("index")) {
+    int index = server.arg("index").toInt();
+    if (index >= 0 && index < numCodes) {
+      uint64_t value = strtoull(savedCodes[index].code.substring(2).c_str(), NULL, 16);
+      sendIR(savedCodes[index].protocol, value, savedCodes[index].bits);
+    }
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void handleDelete() {
+  if (server.hasArg("index")) {
+    int index = server.arg("index").toInt();
+    deleteCode(index);
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+void setup() {
+  Serial.begin(115200);
+  irrecv.enableIRIn();
+  irsend.begin();
+
+  loadCodes();
+
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  WiFi.softAP("●", "");
+  Serial.println("WiFi AP: ● | IP: 192.168.4.1");
+
+  server.on("/", handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.on("/send", HTTP_POST, handleSend);
+  server.on("/delete", HTTP_POST, handleDelete);
+  server.begin();
+  Serial.println("Web server started!");
+}
+
+void loop() {
+  server.handleClient();
+
+  if (irrecv.decode(&results)) {
+    if (results.decode_type != UNKNOWN) {
+      lastProtocol = typeToString(results.decode_type);
+      lastCode = "0x" + uint64ToString(results.value, 16);
+      Serial.println(lastCode + " (" + lastProtocol + ", " + String(results.bits) + " bits)");
+    } else {
+      lastProtocol = "UNKNOWN";
+      lastCode = "Không nhận diện";
+    }
+    irrecv.resume();
+  }
+}
